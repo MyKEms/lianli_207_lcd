@@ -99,43 +99,15 @@ def create_blank_jpeg() -> bytes:
     return buf.getvalue()
 
 
-def create_deyloop_image() -> bytes:
-    """Generates Deyloop's Driver at 1472x720, then rotates to 720x1472."""
-    img  = Image.new('RGB', (H, W), color=(13, 13, 18))  # draw on landscape canvas
-    draw = ImageDraw.Draw(img)
-
-    try:
-        font_large  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 62)
-        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
-        font_small  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 26)
-    except IOError:
-        font_large = font_medium = font_small = ImageFont.load_default()
-
-    def center_text(text, y, font, color):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        x    = (H - (bbox[2] - bbox[0])) / 2  # center across 1472px width
-        draw.text((x, y), text, font=font, fill=color)
-
-    # Accent line top
-    draw.rectangle([(60, 240), (H - 60, 244)], fill=(0, 200, 100))
-
-    # Main title
-    center_text("Deyloop's Driver",          270, font_large,  (0, 255, 128))
-
-    # Subtitle
-    center_text("PyUSB  Linux  Lancool 207", 360, font_medium, (160, 160, 160))
-
-    # Accent line bottom
-    draw.rectangle([(60, 410), (H - 60, 414)], fill=(0, 200, 100))
-
-    # Timestamp
-    center_text(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"), 430, font_small, (80, 80, 80))
-
-    # Rotate to portrait (720x1472) before sending
-    img = img.rotate(-90, expand=True)
+def create_deyloop_image(background_image) -> bytes:
+    """Loads image at 1472x720, then rotates to 720x1472."""
 
     buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=95)
+    with Image.open(background_image) as img:
+        img = img.resize(size=(1472,720))
+        img = img.rotate(-90, expand=True)
+        img.save(buf, format='JPEG', quality=95)
+
     jpg = buf.getvalue()
     assert len(jpg) <= 512000, f"Image too large: {len(jpg)} bytes"
     print(f"[*] Generated image: {W}x{H}, {len(jpg)} bytes")
@@ -160,7 +132,7 @@ def build_png_packet(png_bytes: bytes) -> bytes:
 # ─────────────────────────────────────────────
 #  USB COMMUNICATION
 # ─────────────────────────────────────────────
-def push_to_lcd():
+def push_to_lcd(background_image):
     dev = usb.core.find(idVendor=VID, idProduct=PID)
     if dev is None:
         print("[-] Device not found. Is the Lancool 207 Digital connected?")
@@ -235,7 +207,7 @@ def push_to_lcd():
     time.sleep(0.1)
 
     # ── Push the actual image ─────────────────────────────────────────────
-    push_chunked(build_jpeg_packet(create_deyloop_image()), "Deyloop's Driver (720x1472)")
+    push_chunked(build_jpeg_packet(create_deyloop_image(background_image)), "Deyloop's Driver (720x1472)")
 
     print("\n[+] All done! Your screen should now show Deyloop's Driver.")
 
@@ -246,6 +218,8 @@ def push_to_lcd():
 # ─────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────
+import sys
 if __name__ == "__main__":
-    push_to_lcd()
+    background_image = sys.argv[1]
+    push_to_lcd(background_image)
 
