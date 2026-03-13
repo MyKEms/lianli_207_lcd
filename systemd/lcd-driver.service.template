@@ -1,0 +1,16 @@
+[Unit]
+Description=Lian Li Lancool 207 Digital LCD Driver
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/opt/lianli-lcd/bin/lcd-driver __BACKGROUND_IMAGE__
+Restart=on-failure
+RestartSec=5
+Environment=LOG_LEVEL=INFO
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

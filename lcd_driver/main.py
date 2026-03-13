@@ -541,9 +541,11 @@ def push_to_lcd(background_image):
 # ─────────────────────────────────────────────
 #  ENTRY POINT
 # ─────────────────────────────────────────────
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 2:
-        log.error("Usage: python main.py <background_image>")
+        log.error("Usage: lcd-driver <background_image>")
         sys.exit(1)
     push_to_lcd(sys.argv[1])
 
+if __name__ == "__main__":
+    main()
