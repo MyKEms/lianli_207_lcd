@@ -4,7 +4,9 @@ import struct
 import time
 import io
 import sys
+import os
 import subprocess
+import logging
 from datetime import datetime
 from collections import deque
 from PIL import Image, ImageDraw, ImageFont
@@ -13,14 +15,25 @@ from Crypto.Util.Padding import pad
 import psutil
 
 # ─────────────────────────────────────────────
+#  LOGGING
+# ─────────────────────────────────────────────
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s %(message)s",
+    stream=sys.stdout
+)
+log = logging.getLogger("lcd_driver")
+
+
+# ─────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────
-VID          = 0x1cbe
-PID          = 0xa065
-DES_KEY      = b'slv3tuzx'
-W, H         = 720, 1472
-APP_START    = time.time()
-HISTORY_LEN  = 60  # samples kept for graphs
+VID         = 0x1cbe
+PID         = 0xa065
+DES_KEY     = b'slv3tuzx'
+W, H        = 720, 1472
+APP_START   = time.time()
+HISTORY_LEN = 180  # 180 samples × 1s = 3 min
 
 
 # ─────────────────────────────────────────────
@@ -105,7 +118,8 @@ def get_gpu_stats() -> dict:
         ], timeout=2).decode().strip()
         gpu_util, gpu_temp, gpu_power = [x.strip() for x in out.split(",")]
         return {"util": int(gpu_util), "temp": int(float(gpu_temp)), "power": float(gpu_power)}
-    except Exception:
+    except Exception as e:
+        log.debug(f"nvidia-smi failed: {e}")
         return {"util": 0, "temp": 0, "power": 0.0}
 
 
@@ -117,8 +131,8 @@ def get_cpu_stats() -> dict:
             if key in temps and temps[key]:
                 result["temp"] = temps[key][0].current
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"CPU temp read failed: {e}")
     try:
         p1 = int(subprocess.check_output(
             ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"], timeout=1).decode().strip())
@@ -134,8 +148,8 @@ def get_cpu_stats() -> dict:
             p2 = int(subprocess.check_output(
                 ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"], timeout=1).decode().strip())
             result["power"] = (p2 - p1) / 0.1 / 1_000_000
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"CPU power read failed: {e}")
     return result
 
 
@@ -165,7 +179,7 @@ def create_deyloop_image(background_image) -> bytes:
         img.save(buf, format='JPEG', quality=95)
     jpg = buf.getvalue()
     assert len(jpg) <= 512000, f"Image too large: {len(jpg)} bytes"
-    print(f"[*] Generated image: {W}x{H}, {len(jpg)} bytes")
+    log.info(f"Background image loaded: {len(jpg)} bytes")
     return jpg
 
 
@@ -181,6 +195,7 @@ def create_stats_png() -> bytes:
         font_small  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 24)
         font_tiny   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 18)
     except IOError:
+        log.warning("DejaVu fonts not found, falling back to default font")
         font_large = font_medium = font_small = font_tiny = ImageFont.load_default()
 
     # ── Pull stats ──────────────────────────────────────────────────────────
@@ -197,12 +212,16 @@ def create_stats_png() -> bytes:
     history["gpu_pct"].append(float(gpu["util"]))
     history["gpu_temp"].append(float(gpu["temp"]))
 
+    log.debug(f"Stats — CPU: {cpu_percent:.0f}% {cpu['temp']}°C  "
+              f"GPU: {gpu['util']}% {gpu['temp']}°C {gpu['power']:.0f}W  "
+              f"RAM: {ram.percent:.0f}%")
+
     # ── Helpers ────────────────────────────────────────────────────────────
     def draw_card(x, y, w, h, alpha=150):
         draw.rounded_rectangle([x, y, x + w, y + h], radius=14, fill=(10, 10, 10, alpha))
 
     def draw_bar(x, y, w, label, value_pct, color, text):
-        BAR_H = 36          # thicker bars
+        BAR_H     = 36
         LABEL_GAP = 28
         draw.text((x, y), label, font=font_small, fill=(180, 180, 180, 220))
         y += LABEL_GAP
@@ -212,9 +231,8 @@ def create_stats_png() -> bytes:
             draw.rounded_rectangle([x, y, x + fill_w, y + BAR_H], radius=8, fill=(*color, 230))
         bbox   = draw.textbbox((0, 0), text, font=font_small)
         text_w = bbox[2] - bbox[0]
-        # vertically centre text in bar
-        draw.text((x + w - text_w - 10, y + (BAR_H - 24) // 2 + 2), text,
-                  font=font_small, fill=(255, 255, 255, 240))
+        draw.text((x + w - text_w - 10, y + (BAR_H - 24) // 2 + 2),
+                  text, font=font_small, fill=(255, 255, 255, 240))
         return y + BAR_H + 14
 
     def draw_graph(x, y, w, h, series, y_min, y_max, title):
@@ -272,22 +290,11 @@ def create_stats_png() -> bytes:
     col2_x = col1_x + col1_w + GUTTER
     col2_w = canvas_w - col2_x - PAD
 
-    # Vertical zones:
-    #   Title      (70px)
-    #   CPU bars   (left)  | GPU bars  (right)   ~160px
-    #   Graphs     (left)  | Graphs    (right)    ~220px
-    #   RAM bar    (left)  | Net       (right)    ~86px
-
     TITLE_H    = 70
     TITLE_Y    = PAD
-
-    # CPU card: label(28) + bar(36) + gap(14) = 78 per bar × 2 + top pad(12) + bottom pad(8) = 176
     CPU_CARD_H = 176
     GPU_CARD_H = 176
     BARS_Y     = TITLE_Y + TITLE_H + GUTTER
-
-    # Graph zone sits between bars and bottom strip
-    # RAM/Net strip at very bottom
     RAM_NET_H  = 86
     BOTTOM_Y   = canvas_h - PAD - RAM_NET_H
     GRAPH_Y    = BARS_Y + CPU_CARD_H + GUTTER
@@ -298,7 +305,8 @@ def create_stats_png() -> bytes:
     draw.text((PAD + 18, TITLE_Y + 10), "deyolith", font=font_large, fill=(255, 255, 255, 245))
     ts   = datetime.now().strftime("%H:%M:%S   %d %b %Y")
     ts_w = draw.textbbox((0, 0), ts, font=font_small)[2]
-    draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 22), ts, font=font_small, fill=(150, 150, 150, 215))
+    draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 22), ts,
+              font=font_small, fill=(150, 150, 150, 215))
 
     # ── Left: CPU bars ─────────────────────────────────────────────────────
     draw_card(col1_x, BARS_Y, col1_w, CPU_CARD_H, alpha=150)
@@ -345,7 +353,7 @@ def create_stats_png() -> bytes:
         title="GPU  —  3 min history"
     )
 
-    # ── Bottom strip: RAM (left) | Network (right) ─────────────────────────
+    # ── Bottom strip: RAM | Network ────────────────────────────────────────
     draw_card(col1_x, BOTTOM_Y, col1_w, RAM_NET_H, alpha=150)
     draw_bar(col1_x + 16, BOTTOM_Y + 12, col1_w - 32, "RAM",
              ram.percent, (160, 80, 255),
@@ -365,7 +373,7 @@ def create_stats_png() -> bytes:
     img.save(buf, format='PNG')
     png = buf.getvalue()
     assert len(png) <= 512000, f"PNG overlay too large: {len(png)} bytes"
-    print(f"[*] Stats PNG: {len(png)} bytes")
+    log.debug(f"Stats PNG rendered: {len(png)} bytes")
     return png
 
 
@@ -395,18 +403,18 @@ def drain_in(ep_in):
         pass
 
 
-def run_stats_loop(push_chunked, ep_in, ep_out, interval: float = 3.0):
-    print("\n[*] Entering live stats loop. Ctrl+C to exit.\n")
+def run_stats_loop(push_chunked, ep_in, ep_out, interval: float = 1.0):
+    log.info("Entering live stats loop")
     try:
         while True:
             tick_start = time.time()
             drain_in(ep_in)
             png_bytes = create_stats_png()
-            push_chunked(build_png_packet(png_bytes), f"StatsOverlay ({len(png_bytes)} bytes)")
+            push_chunked(build_png_packet(png_bytes), "StatsOverlay")
             elapsed = time.time() - tick_start
             time.sleep(max(0, interval - elapsed))
     except KeyboardInterrupt:
-        print("\n[*] Stopped. Clearing PNG overlay...")
+        log.info("Interrupted — clearing PNG overlay")
         try:
             ep_out.clear_halt()
         except Exception:
@@ -420,24 +428,24 @@ def run_stats_loop(push_chunked, ep_in, ep_out, interval: float = 3.0):
 def push_to_lcd(background_image):
     dev = usb.core.find(idVendor=VID, idProduct=PID)
     if dev is None:
-        print("[-] Device not found. Is the Lancool 207 Digital connected?")
+        log.error("Device not found. Is the Lancool 207 Digital connected?")
         sys.exit(1)
 
-    print(f"[+] Found device: {VID:#06x}:{PID:#06x}")
+    log.info(f"Found device: {VID:#06x}:{PID:#06x}")
 
     for cfg in dev:
         for intf in cfg:
             if dev.is_kernel_driver_active(intf.bInterfaceNumber):
                 try:
                     dev.detach_kernel_driver(intf.bInterfaceNumber)
-                    print(f"[*] Detached kernel driver from interface {intf.bInterfaceNumber}")
+                    log.info(f"Detached kernel driver from interface {intf.bInterfaceNumber}")
                 except usb.core.USBError as e:
-                    print(f"[*] Could not detach: {e}")
+                    log.warning(f"Could not detach kernel driver: {e}")
 
     try:
         dev.set_configuration()
     except usb.core.USBError as e:
-        print(f"[*] set_configuration failed ({e}), attempting soft cleanup...")
+        log.warning(f"set_configuration failed ({e}) — attempting soft cleanup")
         for cfg in dev:
             for intf in cfg:
                 try:
@@ -462,24 +470,24 @@ def push_to_lcd(background_image):
         usb.util.endpoint_type(e.bmAttributes)          == usb.util.ENDPOINT_TYPE_BULK)
 
     if not ep_out or not ep_in:
-        print("[-] Could not find BULK IN/OUT endpoints.")
+        log.error("Could not find BULK IN/OUT endpoints")
         sys.exit(1)
 
-    print(f"[+] Endpoints  OUT: {ep_out.bEndpointAddress:#04x}  IN: {ep_in.bEndpointAddress:#04x}")
+    log.info(f"Endpoints — OUT: {ep_out.bEndpointAddress:#04x}  IN: {ep_in.bEndpointAddress:#04x}")
 
     def send_and_read(payload: bytes, name: str):
-        print(f"[*] Sending {name} ({len(payload)} bytes)...")
         ep_out.write(payload, timeout=200)
+        log.debug(f"Sent {name} ({len(payload)} bytes)")
         try:
             ack = ep_in.read(512, timeout=200)
-            print(f"    [+] ACK: {[hex(x) for x in ack[:4]]}")
-        except usb.core.USBError as e:
-            print(f"    [-] Read timeout (may be expected): {e}")
+            log.debug(f"ACK {name}: {[hex(x) for x in ack[:4]]}")
+        except usb.core.USBError:
+            log.debug(f"No ACK for {name} (expected)")
 
     def push_chunked(full_payload: bytes, label: str):
         total  = len(full_payload)
         chunks = (total + 4095) // 4096
-        print(f"[*] Pushing {label} — {total} bytes in {chunks} chunks...")
+        log.debug(f"Pushing {label} — {total} bytes in {chunks} chunks")
         for i in range(0, total, 4096):
             chunk = full_payload[i:i + 4096]
             for attempt in range(3):
@@ -487,15 +495,15 @@ def push_to_lcd(background_image):
                     ep_out.write(chunk, timeout=5000)
                     break
                 except usb.core.USBTimeoutError:
-                    print(f"    [!] Timeout on chunk {i//4096}, attempt {attempt+1}/3 — clearing halt...")
+                    log.warning(f"Timeout on chunk {i//4096}, attempt {attempt+1}/3 — clearing halt")
                     try:
                         ep_out.clear_halt()
                         time.sleep(0.3)
                     except usb.core.USBError as he:
-                        print(f"    [!] clear_halt failed: {he}")
+                        log.warning(f"clear_halt failed: {he}")
                         time.sleep(0.5)
             else:
-                print(f"    [-] Chunk {i//4096} permanently failed, skipping frame.")
+                log.error(f"Chunk {i//4096} of {label} failed after 3 retries — skipping frame")
                 try:
                     ep_out.clear_halt()
                 except Exception:
@@ -505,30 +513,27 @@ def push_to_lcd(background_image):
         send_and_read(encrypt_header(build_base_cmd(0x79)), "StartPlay (0x79)")
 
     # ── Initialization sequence ───────────────────────────────────────────
-    send_and_read(build_rotate_cmd(rotation=0),      "Rotate (0x0D, r=0)")
+    log.info("Initializing display")
+    send_and_read(build_rotate_cmd(rotation=0),      "Rotate (0x0D)")
     time.sleep(0.1)
-
     send_and_read(build_clock_packet(is_stop=False), "SyncClock (0x33)")
     time.sleep(0.1)
-
     send_and_read(build_clock_packet(is_stop=True),  "StopClock (0x34)")
     time.sleep(0.2)
 
-    # ── Clear both layers ─────────────────────────────────────────────────
-    push_chunked(build_png_packet(create_blank_png()),   "ClearPngLayer (transparent 720x1472)")
+    log.info("Clearing display layers")
+    push_chunked(build_png_packet(create_blank_png()),   "ClearPngLayer")
+    time.sleep(0.1)
+    push_chunked(build_jpeg_packet(create_blank_jpeg()), "ClearJpgLayer")
     time.sleep(0.1)
 
-    push_chunked(build_jpeg_packet(create_blank_jpeg()), "ClearJpgLayer (black 720x1472)")
-    time.sleep(0.1)
-
-    # ── Push static JPG background ────────────────────────────────────────
-    push_chunked(build_jpeg_packet(create_deyloop_image(background_image)), "JPG Background (720x1472)")
+    log.info("Pushing background image")
+    push_chunked(build_jpeg_packet(create_deyloop_image(background_image)), "JPG Background")
     time.sleep(0.2)
 
-    # ── Enter live stats loop ─────────────────────────────────────────────
     run_stats_loop(push_chunked, ep_in, ep_out, interval=1.0)
 
-    # ── Cleanup (after Ctrl+C) ────────────────────────────────────────────
+    log.info("Releasing USB device")
     usb.util.release_interface(dev, 0)
     usb.util.dispose_resources(dev)
 
@@ -538,7 +543,7 @@ def push_to_lcd(background_image):
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py <background_image>")
+        log.error("Usage: python main.py <background_image>")
         sys.exit(1)
     push_to_lcd(sys.argv[1])
 
