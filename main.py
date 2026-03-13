@@ -6,6 +6,7 @@ import io
 import sys
 import subprocess
 from datetime import datetime
+from collections import deque
 from PIL import Image, ImageDraw, ImageFont
 from Crypto.Cipher import DES
 from Crypto.Util.Padding import pad
@@ -14,11 +15,23 @@ import psutil
 # ─────────────────────────────────────────────
 #  CONFIGURATION
 # ─────────────────────────────────────────────
-VID       = 0x1cbe
-PID       = 0xa065
-DES_KEY   = b'slv3tuzx'
-W, H      = 720, 1472
-APP_START = time.time()
+VID          = 0x1cbe
+PID          = 0xa065
+DES_KEY      = b'slv3tuzx'
+W, H         = 720, 1472
+APP_START    = time.time()
+HISTORY_LEN  = 60  # samples kept for graphs
+
+
+# ─────────────────────────────────────────────
+#  ROLLING HISTORY
+# ─────────────────────────────────────────────
+history = {
+    "cpu_pct":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+    "cpu_temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+    "gpu_pct":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+    "gpu_temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+}
 
 
 # ─────────────────────────────────────────────
@@ -91,17 +104,12 @@ def get_gpu_stats() -> dict:
             "--format=csv,noheader,nounits"
         ], timeout=2).decode().strip()
         gpu_util, gpu_temp, gpu_power = [x.strip() for x in out.split(",")]
-        return {
-            "util":  int(gpu_util),
-            "temp":  int(float(gpu_temp)),
-            "power": float(gpu_power)
-        }
+        return {"util": int(gpu_util), "temp": int(float(gpu_temp)), "power": float(gpu_power)}
     except Exception:
         return {"util": 0, "temp": 0, "power": 0.0}
 
 
 def get_cpu_stats() -> dict:
-    """Returns cpu temp and package power via psutil sensors."""
     result = {"temp": None, "power": None}
     try:
         temps = psutil.sensors_temperatures()
@@ -112,30 +120,20 @@ def get_cpu_stats() -> dict:
     except Exception:
         pass
     try:
-        # RAPL power — available on most Intel/AMD via powercap
-        power = subprocess.check_output(
-            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"],
-            timeout=1
-        ).decode().strip()
+        p1 = int(subprocess.check_output(
+            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"], timeout=1).decode().strip())
         time.sleep(0.1)
-        power2 = subprocess.check_output(
-            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"],
-            timeout=1
-        ).decode().strip()
-        result["power"] = (int(power2) - int(power)) / 0.1 / 1_000_000  # watts
+        p2 = int(subprocess.check_output(
+            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"], timeout=1).decode().strip())
+        result["power"] = (p2 - p1) / 0.1 / 1_000_000
     except Exception:
         try:
-            # AMD alternative path
-            power = subprocess.check_output(
-                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"],
-                timeout=1
-            ).decode().strip()
+            p1 = int(subprocess.check_output(
+                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"], timeout=1).decode().strip())
             time.sleep(0.1)
-            power2 = subprocess.check_output(
-                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"],
-                timeout=1
-            ).decode().strip()
-            result["power"] = (int(power2) - int(power)) / 0.1 / 1_000_000
+            p2 = int(subprocess.check_output(
+                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"], timeout=1).decode().strip())
+            result["power"] = (p2 - p1) / 0.1 / 1_000_000
         except Exception:
             pass
     return result
@@ -181,10 +179,9 @@ def create_stats_png() -> bytes:
         font_large  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", 48)
         font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 32)
         font_small  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 24)
+        font_tiny   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 18)
     except IOError:
-        font_large  = ImageFont.load_default()
-        font_medium = font_large
-        font_small  = font_large
+        font_large = font_medium = font_small = font_tiny = ImageFont.load_default()
 
     # ── Pull stats ──────────────────────────────────────────────────────────
     cpu_percent = psutil.cpu_percent(interval=0.5)
@@ -194,51 +191,118 @@ def create_stats_png() -> bytes:
     gpu         = get_gpu_stats()
     net         = psutil.net_io_counters()
 
+    # ── Update history ──────────────────────────────────────────────────────
+    history["cpu_pct"].append(cpu_percent)
+    history["cpu_temp"].append(cpu["temp"] or 0.0)
+    history["gpu_pct"].append(float(gpu["util"]))
+    history["gpu_temp"].append(float(gpu["temp"]))
+
     # ── Helpers ────────────────────────────────────────────────────────────
     def draw_card(x, y, w, h, alpha=150):
         draw.rounded_rectangle([x, y, x + w, y + h], radius=14, fill=(10, 10, 10, alpha))
 
     def draw_bar(x, y, w, label, value_pct, color, text):
-        """Draws label above bar, value text anchored inside bar on the right."""
-        BAR_H = 26
+        BAR_H = 36          # thicker bars
+        LABEL_GAP = 28
         draw.text((x, y), label, font=font_small, fill=(180, 180, 180, 220))
-        y += 28
-        # Bar background
-        draw.rounded_rectangle([x, y, x + w, y + BAR_H], radius=5, fill=(40, 40, 40, 200))
-        # Bar fill
+        y += LABEL_GAP
+        draw.rounded_rectangle([x, y, x + w, y + BAR_H], radius=8, fill=(40, 40, 40, 200))
         fill_w = int(w * min(max(value_pct, 0), 100) / 100)
         if fill_w > 0:
-            draw.rounded_rectangle([x, y, x + fill_w, y + BAR_H], radius=5, fill=(*color, 230))
-        # Value text: right-aligned INSIDE the bar background
-        bbox = draw.textbbox((0, 0), text, font=font_small)
+            draw.rounded_rectangle([x, y, x + fill_w, y + BAR_H], radius=8, fill=(*color, 230))
+        bbox   = draw.textbbox((0, 0), text, font=font_small)
         text_w = bbox[2] - bbox[0]
-        draw.text((x + w - text_w - 8, y + 3), text, font=font_small, fill=(255, 255, 255, 240))
-        return y + BAR_H + 16
+        # vertically centre text in bar
+        draw.text((x + w - text_w - 10, y + (BAR_H - 24) // 2 + 2), text,
+                  font=font_small, fill=(255, 255, 255, 240))
+        return y + BAR_H + 14
 
-    # ── Layout: landscape 1472x720, two-column ─────────────────────────────
+    def draw_graph(x, y, w, h, series, y_min, y_max, title):
+        AXIS_W  = 36
+        PAD_TOP = 22
+        PAD_BOT = 4
+        gx = x + AXIS_W
+        gy = y + PAD_TOP
+        gw = w - AXIS_W - 4
+        gh = h - PAD_TOP - PAD_BOT
+
+        draw_card(x, y, w, h, alpha=160)
+        draw.text((gx, y + 3), title, font=font_tiny, fill=(200, 200, 200, 220))
+
+        y_range = y_max - y_min if y_max != y_min else 1
+        for pct in (0, 25, 50, 75, 100):
+            val = y_min + (pct / 100) * y_range
+            py  = gy + gh - int((val - y_min) / y_range * gh)
+            draw.line([(gx, py), (gx + gw, py)], fill=(60, 60, 60, 120), width=1)
+            label = f"{int(val)}"
+            lw    = draw.textbbox((0, 0), label, font=font_tiny)[2]
+            draw.text((gx - lw - 4, py - 9), label, font=font_tiny, fill=(120, 120, 120, 200))
+
+        for data, color, _ in series:
+            pts    = list(data)
+            n      = len(pts)
+            coords = []
+            for i, v in enumerate(pts):
+                px = gx + int(i / (n - 1) * gw) if n > 1 else gx
+                py = gy + gh - int((v - y_min) / y_range * gh)
+                py = max(gy, min(gy + gh, py))
+                coords.append((px, py))
+            if len(coords) >= 2:
+                draw.line(coords, fill=(*color, 230), width=2)
+            if coords:
+                cx, cy = coords[-1]
+                draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(*color, 255))
+
+        # Legend — top right
+        lx = x + w - 4
+        for _, color, label in reversed(series):
+            lw  = draw.textbbox((0, 0), label, font=font_tiny)[2]
+            lx -= lw
+            draw.text((lx, y + 3), label, font=font_tiny, fill=(200, 200, 200, 220))
+            lx -= 16
+            draw.rectangle([lx, y + 5, lx + 12, y + 15], fill=(*color, 220))
+            lx -= 12
+
+    # ── Layout constants ───────────────────────────────────────────────────
     PAD    = 28
-    GUTTER = 18
+    GUTTER = 14
+
+    col1_x = PAD
+    col1_w = 690
+    col2_x = col1_x + col1_w + GUTTER
+    col2_w = canvas_w - col2_x - PAD
+
+    # Vertical zones:
+    #   Title      (70px)
+    #   CPU bars   (left)  | GPU bars  (right)   ~160px
+    #   Graphs     (left)  | Graphs    (right)    ~220px
+    #   RAM bar    (left)  | Net       (right)    ~86px
+
+    TITLE_H    = 70
+    TITLE_Y    = PAD
+
+    # CPU card: label(28) + bar(36) + gap(14) = 78 per bar × 2 + top pad(12) + bottom pad(8) = 176
+    CPU_CARD_H = 176
+    GPU_CARD_H = 176
+    BARS_Y     = TITLE_Y + TITLE_H + GUTTER
+
+    # Graph zone sits between bars and bottom strip
+    # RAM/Net strip at very bottom
+    RAM_NET_H  = 86
+    BOTTOM_Y   = canvas_h - PAD - RAM_NET_H
+    GRAPH_Y    = BARS_Y + CPU_CARD_H + GUTTER
+    GRAPH_H    = BOTTOM_Y - GRAPH_Y - GUTTER
 
     # ── Title strip ────────────────────────────────────────────────────────
-    draw_card(PAD, PAD, canvas_w - 2*PAD, 78, alpha=185)
-    draw.text((PAD + 18, PAD + 10), "deyolith", font=font_large, fill=(255, 255, 255, 245))
-    # Timestamp right-aligned inside title card
-    ts = datetime.now().strftime("%H:%M:%S   %d %b %Y")
-    ts_bbox = draw.textbbox((0, 0), ts, font=font_small)
-    ts_w = ts_bbox[2] - ts_bbox[0]
-    draw.text((canvas_w - PAD - ts_w - 18, PAD + 26), ts, font=font_small, fill=(150, 150, 150, 215))
+    draw_card(PAD, TITLE_Y, canvas_w - 2*PAD, TITLE_H, alpha=185)
+    draw.text((PAD + 18, TITLE_Y + 10), "deyolith", font=font_large, fill=(255, 255, 255, 245))
+    ts   = datetime.now().strftime("%H:%M:%S   %d %b %Y")
+    ts_w = draw.textbbox((0, 0), ts, font=font_small)[2]
+    draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 22), ts, font=font_small, fill=(150, 150, 150, 215))
 
-    # ── Column geometry ────────────────────────────────────────────────────
-    col_top = PAD + 78 + GUTTER
-    col1_x  = PAD
-    col1_w  = 690
-    col2_x  = col1_x + col1_w + GUTTER
-    col2_w  = canvas_w - col2_x - PAD
-
-    # ── Left column: CPU + RAM ──────────────────────────────────────────────
-    cpu_card_h = 260 if cpu["temp"] is not None else 155
-    draw_card(col1_x, col_top, col1_w, cpu_card_h, alpha=150)
-    y = col_top + 16
+    # ── Left: CPU bars ─────────────────────────────────────────────────────
+    draw_card(col1_x, BARS_Y, col1_w, CPU_CARD_H, alpha=150)
+    y = BARS_Y + 12
 
     cpu_text = f"{cpu_percent:.0f}%"
     if cpu_freq:
@@ -249,35 +313,52 @@ def create_stats_png() -> bytes:
 
     if cpu["temp"] is not None:
         tc = (255, 70, 70) if cpu["temp"] > 80 else (255, 200, 0) if cpu["temp"] > 65 else (0, 210, 110)
-        y = draw_bar(col1_x + 16, y, col1_w - 32, "CPU TEMP", cpu["temp"], tc, f"{cpu['temp']:.0f} °C")
+        draw_bar(col1_x + 16, y, col1_w - 32, "CPU TEMP", cpu["temp"], tc, f"{cpu['temp']:.0f} °C")
 
-    y = col_top + cpu_card_h + GUTTER
-    draw_card(col1_x, y, col1_w, 100, alpha=150)
-    y += 14
-    ram_text = f"{ram.used / 1e9:.1f} / {ram.total / 1e9:.1f} GB  ({ram.percent:.0f}%)"
-    draw_bar(col1_x + 16, y, col1_w - 32, "RAM", ram.percent, (160, 80, 255), ram_text)
+    # ── Right: GPU bars ────────────────────────────────────────────────────
+    draw_card(col2_x, BARS_Y, col2_w, GPU_CARD_H, alpha=150)
+    y = BARS_Y + 12
 
-    # ── Right column: GPU + Network ─────────────────────────────────────────
-    y = col_top
-    draw_card(col2_x, y, col2_w, 260, alpha=150)
-    y += 16
-
-    gpu_text = f"{gpu['util']}%  {gpu['power']:.0f} W"
-    y = draw_bar(col2_x + 16, y, col2_w - 32, "GPU USAGE  (RTX 5070 Ti)", gpu["util"], (255, 140, 0), gpu_text)
-
+    y = draw_bar(col2_x + 16, y, col2_w - 32, "GPU USAGE  (RTX 5070 Ti)",
+                 gpu["util"], (255, 140, 0), f"{gpu['util']}%  {gpu['power']:.0f} W")
     gtc = (255, 70, 70) if gpu["temp"] > 85 else (255, 200, 0) if gpu["temp"] > 70 else (0, 210, 110)
-    y = draw_bar(col2_x + 16, y, col2_w - 32, "GPU TEMP", gpu["temp"], gtc, f"{gpu['temp']} °C")
+    draw_bar(col2_x + 16, y, col2_w - 32, "GPU TEMP",
+             gpu["temp"], gtc, f"{gpu['temp']} °C")
 
-    y = col_top + 260 + GUTTER
-    draw_card(col2_x, y, col2_w, 100, alpha=150)
-    y += 14
-    draw.text((col2_x + 16, y), "NETWORK I/O", font=font_small, fill=(180, 180, 180, 220))
-    y += 30
-    draw.text((col2_x + 16, y),
+    # ── Graphs ─────────────────────────────────────────────────────────────
+    draw_graph(
+        x=col1_x, y=GRAPH_Y, w=col1_w, h=GRAPH_H,
+        series=[
+            (history["cpu_pct"],  (0, 180, 255), "CPU %"),
+            (history["cpu_temp"], (0, 210, 110),  "Temp °C"),
+        ],
+        y_min=0, y_max=100,
+        title="CPU  —  3 min history"
+    )
+    draw_graph(
+        x=col2_x, y=GRAPH_Y, w=col2_w, h=GRAPH_H,
+        series=[
+            (history["gpu_pct"],  (255, 140, 0),  "GPU %"),
+            (history["gpu_temp"], (0, 210, 110),   "Temp °C"),
+        ],
+        y_min=0, y_max=100,
+        title="GPU  —  3 min history"
+    )
+
+    # ── Bottom strip: RAM (left) | Network (right) ─────────────────────────
+    draw_card(col1_x, BOTTOM_Y, col1_w, RAM_NET_H, alpha=150)
+    draw_bar(col1_x + 16, BOTTOM_Y + 12, col1_w - 32, "RAM",
+             ram.percent, (160, 80, 255),
+             f"{ram.used / 1e9:.1f} / {ram.total / 1e9:.1f} GB  ({ram.percent:.0f}%)")
+
+    draw_card(col2_x, BOTTOM_Y, col2_w, RAM_NET_H, alpha=150)
+    draw.text((col2_x + 16, BOTTOM_Y + 10), "NETWORK I/O",
+              font=font_small, fill=(180, 180, 180, 220))
+    draw.text((col2_x + 16, BOTTOM_Y + 42),
               f"↑ {net.bytes_sent / 1e6:.1f} MB     ↓ {net.bytes_recv / 1e6:.1f} MB",
               font=font_medium, fill=(80, 220, 170, 235))
 
-    # ── Rotate to portrait (matches JPG pipeline) ──────────────────────────
+    # ── Rotate to portrait ─────────────────────────────────────────────────
     img = img.rotate(-90, expand=True)
 
     buf = io.BytesIO()
