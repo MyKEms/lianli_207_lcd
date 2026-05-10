@@ -45,6 +45,7 @@ history = {
     "gpu_pct":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
     "gpu_temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
     "gpu_mem":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+    "ram_pct":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
 }
 
 
@@ -219,6 +220,7 @@ def create_stats_png() -> bytes:
     history["gpu_temp"].append(float(gpu["temp"]))
     if gpu["mem_total"] > 0:
         history["gpu_mem"].append(gpu["mem_used"] / gpu["mem_total"] * 100)
+    history["ram_pct"].append(ram.percent)
 
     log.debug(f"Stats — CPU: {cpu_percent:.0f}% {cpu['temp']}°C  "
               f"GPU: {gpu['util']}% {gpu['temp']}°C {gpu['power']:.0f}W  "
@@ -347,6 +349,7 @@ def create_stats_png() -> bytes:
         series=[
             (history["cpu_pct"],  (0, 180, 255), "CPU %"),
             (history["cpu_temp"], (0, 210, 110),  "Temp °C"),
+            (history["ram_pct"],  (160, 80, 255), "RAM %"),
         ],
         y_min=0, y_max=100,
         title="CPU  —  3 min history"
