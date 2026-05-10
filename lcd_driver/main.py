@@ -44,6 +44,7 @@ history = {
     "cpu_temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
     "gpu_pct":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
     "gpu_temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+    "gpu_mem":  deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
 }
 
 
@@ -113,14 +114,20 @@ def get_gpu_stats() -> dict:
     try:
         out = subprocess.check_output([
             "nvidia-smi",
-            "--query-gpu=utilization.gpu,temperature.gpu,power.draw",
+            "--query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.used,memory.total",
             "--format=csv,noheader,nounits"
         ], timeout=2).decode().strip()
-        gpu_util, gpu_temp, gpu_power = [x.strip() for x in out.split(",")]
-        return {"util": int(gpu_util), "temp": int(float(gpu_temp)), "power": float(gpu_power)}
+        gpu_util, gpu_temp, gpu_power, mem_used, mem_total = [x.strip() for x in out.split(",")]
+        return {
+            "util": int(gpu_util),
+            "temp": int(float(gpu_temp)),
+            "power": float(gpu_power),
+            "mem_used": float(mem_used),
+            "mem_total": float(mem_total),
+        }
     except Exception as e:
         log.debug(f"nvidia-smi failed: {e}")
-        return {"util": 0, "temp": 0, "power": 0.0}
+        return {"util": 0, "temp": 0, "power": 0.0, "mem_used": 0.0, "mem_total": 1.0}
 
 
 def get_cpu_stats() -> dict:
@@ -204,13 +211,14 @@ def create_stats_png() -> bytes:
     cpu         = get_cpu_stats()
     ram         = psutil.virtual_memory()
     gpu         = get_gpu_stats()
-    net         = psutil.net_io_counters()
 
     # ── Update history ──────────────────────────────────────────────────────
     history["cpu_pct"].append(cpu_percent)
     history["cpu_temp"].append(cpu["temp"] or 0.0)
     history["gpu_pct"].append(float(gpu["util"]))
     history["gpu_temp"].append(float(gpu["temp"]))
+    if gpu["mem_total"] > 0:
+        history["gpu_mem"].append(gpu["mem_used"] / gpu["mem_total"] * 100)
 
     log.debug(f"Stats — CPU: {cpu_percent:.0f}% {cpu['temp']}°C  "
               f"GPU: {gpu['util']}% {gpu['temp']}°C {gpu['power']:.0f}W  "
@@ -348,23 +356,24 @@ def create_stats_png() -> bytes:
         series=[
             (history["gpu_pct"],  (255, 140, 0),  "GPU %"),
             (history["gpu_temp"], (0, 210, 110),   "Temp °C"),
+            (history["gpu_mem"],  (160, 80, 255),  "VRAM %"),
         ],
         y_min=0, y_max=100,
         title="GPU  —  3 min history"
     )
 
-    # ── Bottom strip: RAM | Network ────────────────────────────────────────
+    # ── Bottom strip: RAM | GPU Memory ─────────────────────────────────────
     draw_card(col1_x, BOTTOM_Y, col1_w, RAM_NET_H, alpha=150)
     draw_bar(col1_x + 16, BOTTOM_Y + 12, col1_w - 32, "RAM",
-             ram.percent, (160, 80, 255),
-             f"{ram.used / 1e9:.1f} / {ram.total / 1e9:.1f} GB  ({ram.percent:.0f}%)")
+              ram.percent, (160, 80, 255),
+              f"{ram.used / 1e9:.1f} / {ram.total / 1e9:.1f} GB  ({ram.percent:.0f}%)")
 
     draw_card(col2_x, BOTTOM_Y, col2_w, RAM_NET_H, alpha=150)
-    draw.text((col2_x + 16, BOTTOM_Y + 10), "NETWORK I/O",
-              font=font_small, fill=(180, 180, 180, 220))
-    draw.text((col2_x + 16, BOTTOM_Y + 42),
-              f"↑ {net.bytes_sent / 1e6:.1f} MB     ↓ {net.bytes_recv / 1e6:.1f} MB",
-              font=font_medium, fill=(80, 220, 170, 235))
+    gpu_mem_pct = gpu["mem_used"] / gpu["mem_total"] * 100 if gpu["mem_total"] > 0 else 0.0
+    mem_color   = (255, 70, 70) if gpu_mem_pct > 90 else (255, 200, 0) if gpu_mem_pct > 75 else (160, 80, 255)
+    draw_bar(col2_x + 16, BOTTOM_Y + 12, col2_w - 32, "GPU MEMORY",
+              gpu_mem_pct, mem_color,
+              f"{gpu['mem_used']:.0f} / {gpu['mem_total']:.0f} MB  ({gpu_mem_pct:.0f}%)")
 
     # ── Rotate to portrait ─────────────────────────────────────────────────
     img = img.rotate(-90, expand=True)
