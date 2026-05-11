@@ -157,23 +157,24 @@ def get_cpu_stats() -> dict:
                 break
     except Exception as e:
         log.debug(f"CPU temp read failed: {e}")
-    try:
-        p1 = int(subprocess.check_output(
-            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"], timeout=1).decode().strip())
-        time.sleep(0.1)
-        p2 = int(subprocess.check_output(
-            ["cat", "/sys/class/powercap/intel-rapl:0/energy_uj"], timeout=1).decode().strip())
-        result["power"] = (p2 - p1) / 0.1 / 1_000_000
-    except Exception:
+    def _read_energy_uj(path: str) -> int:
+        with open(path, "rb") as f:
+            return int(f.read().strip())
+
+    for rapl_path in (
+        "/sys/class/powercap/intel-rapl:0/energy_uj",
+        "/sys/class/powercap/amd-energy:0/energy_uj",
+    ):
         try:
-            p1 = int(subprocess.check_output(
-                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"], timeout=1).decode().strip())
+            p1 = _read_energy_uj(rapl_path)
             time.sleep(0.1)
-            p2 = int(subprocess.check_output(
-                ["cat", "/sys/class/powercap/amd-energy:0/energy_uj"], timeout=1).decode().strip())
+            p2 = _read_energy_uj(rapl_path)
             result["power"] = (p2 - p1) / 0.1 / 1_000_000
+            break
+        except (PermissionError, FileNotFoundError):
+            continue
         except Exception as e:
-            log.debug(f"CPU power read failed: {e}")
+            log.debug(f"CPU power read failed at {rapl_path}: {e}")
     return result
 
 
