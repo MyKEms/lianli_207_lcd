@@ -1,21 +1,22 @@
 # Lian Li Lancool 207 LCD Driver
 
-A Linux driver for the Lian Li Lancool 207 Digital LCD screen. This project enables displaying system stats (CPU, GPU, RAM, Network) on the LCD panel via USB.
+A Linux driver for the Lian Li Lancool 207 Digital LCD screen. Displays CPU, GPU, and RAM stats on the front-panel LCD via USB.
 
 ## Features
 
-- Real-time CPU and GPU usage monitoring
-- Temperature tracking for CPU and GPU
-- RAM usage display
-- Network I/O statistics
-- 3-minute historical graphs
-- Custom background image support
+- Real-time CPU usage, temperature, frequency, and (Intel/AMD) package power
+- Real-time GPU usage, temperature, power draw, and VRAM via `nvidia-smi`
+- RAM usage (used / total / percent)
+- 3-minute rolling history graphs (CPU% / CPU°C / RAM% on the left, GPU% / GPU°C / VRAM% on the right)
+- Custom background image (JPEG, rotated and resized to 720×1472)
+- Title and GPU label overridable via `LCD_TITLE` and `LCD_GPU_LABEL` env vars (defaults: hostname and `nvidia-smi` detected GPU name)
 
 ## Requirements
 
 - Python 3.12+
-- USB access to the Lian Li Lancool 207 Digital device
-- NVIDIA GPU with `nvidia-smi` (for GPU stats)
+- USB access to the Lian Li Lancool 207 Digital device (`VID 0x1cbe`, `PID 0xa065`)
+- NVIDIA GPU with `nvidia-smi` in `PATH` (GPU panel falls back to zeros if absent)
+- For CPU package power: Intel RAPL (`/sys/class/powercap/intel-rapl:0`) or AMD energy counter (`/sys/class/powercap/amd-energy:0`); optional, the bar just omits the wattage if neither is readable
 
 ## Installation
 
