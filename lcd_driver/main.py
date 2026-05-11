@@ -5,6 +5,7 @@ import time
 import io
 import sys
 import os
+import socket
 import subprocess
 import logging
 from datetime import datetime
@@ -34,6 +35,21 @@ DES_KEY     = b'slv3tuzx'
 W, H        = 720, 1472
 APP_START   = time.time()
 HISTORY_LEN = 180  # 180 samples × 1s = 3 min
+TITLE       = os.environ.get("LCD_TITLE", socket.gethostname())
+
+
+def _detect_gpu_name() -> str:
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            timeout=2,
+        ).decode().strip().splitlines()
+        return out[0] if out else "GPU"
+    except Exception:
+        return "GPU"
+
+
+GPU_NAME = os.environ.get("LCD_GPU_LABEL", _detect_gpu_name())
 
 
 # ─────────────────────────────────────────────
@@ -312,7 +328,7 @@ def create_stats_png() -> bytes:
 
     # ── Title strip ────────────────────────────────────────────────────────
     draw_card(PAD, TITLE_Y, canvas_w - 2*PAD, TITLE_H, alpha=185)
-    draw.text((PAD + 18, TITLE_Y + 10), "deyolith", font=font_large, fill=(255, 255, 255, 245))
+    draw.text((PAD + 18, TITLE_Y + 10), TITLE, font=font_large, fill=(255, 255, 255, 245))
     ts   = datetime.now().strftime("%H:%M:%S   %d %b %Y")
     ts_w = draw.textbbox((0, 0), ts, font=font_small)[2]
     draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 22), ts,
@@ -337,7 +353,7 @@ def create_stats_png() -> bytes:
     draw_card(col2_x, BARS_Y, col2_w, GPU_CARD_H, alpha=150)
     y = BARS_Y + 12
 
-    y = draw_bar(col2_x + 16, y, col2_w - 32, "GPU USAGE  (RTX 5070 Ti)",
+    y = draw_bar(col2_x + 16, y, col2_w - 32, f"GPU USAGE  ({GPU_NAME})",
                  gpu["util"], (255, 140, 0), f"{gpu['util']}%  {gpu['power']:.0f} W")
     gtc = (255, 70, 70) if gpu["temp"] > 85 else (255, 200, 0) if gpu["temp"] > 70 else (0, 210, 110)
     draw_bar(col2_x + 16, y, col2_w - 32, "GPU TEMP",
