@@ -37,6 +37,15 @@ APP_START   = time.time()
 HISTORY_LEN = 180  # 180 samples × 1s = 3 min
 TITLE       = os.environ.get("LCD_TITLE", socket.gethostname())
 
+# Constant watts to add to CPU+GPU when computing the System Power readout
+# (covers motherboard, RAM, fans, SSDs, case lighting, PSU loss — unmeasurable
+# from inside the OS). Default 0 = honest "what we measured". User can set
+# e.g. LCD_BASELINE_WATTS=40 if they want an estimate closer to wall draw.
+try:
+    BASELINE_W = float(os.environ.get("LCD_BASELINE_WATTS", "0"))
+except ValueError:
+    BASELINE_W = 0.0
+
 
 def _detect_gpu_name() -> str:
     try:
@@ -330,10 +339,20 @@ def create_stats_png() -> bytes:
     # ── Title strip ────────────────────────────────────────────────────────
     draw_card(PAD, TITLE_Y, canvas_w - 2*PAD, TITLE_H, alpha=185)
     draw.text((PAD + 18, TITLE_Y + 10), TITLE, font=font_large, fill=(255, 255, 255, 245))
+
+    # System power = CPU package + GPU + optional LCD_BASELINE_WATTS. Top-right.
+    cpu_watts  = cpu.get("power") or 0.0
+    gpu_watts  = gpu.get("power") or 0.0
+    total_w    = cpu_watts + gpu_watts + BASELINE_W
+    power_text = f"SYS  {total_w:.0f} W"
+    power_w    = draw.textbbox((0, 0), power_text, font=font_medium)[2]
+    draw.text((canvas_w - PAD - power_w - 18, TITLE_Y + 4),
+              power_text, font=font_medium, fill=(255, 200, 0, 245))
+
     ts   = datetime.now().strftime("%H:%M:%S   %d %b %Y")
     ts_w = draw.textbbox((0, 0), ts, font=font_small)[2]
-    draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 22), ts,
-              font=font_small, fill=(150, 150, 150, 215))
+    draw.text((canvas_w - PAD - ts_w - 18, TITLE_Y + 42),
+              ts, font=font_small, fill=(150, 150, 150, 215))
 
     # ── Left: CPU bars ─────────────────────────────────────────────────────
     draw_card(col1_x, BARS_Y, col1_w, CPU_CARD_H, alpha=150)
