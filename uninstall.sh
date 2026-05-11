@@ -17,6 +17,9 @@ echo "[*] Removing udev rule..."
 rm -f /etc/udev/rules.d/99-lianli-lcd.rules
 udevadm control --reload-rules
 
+echo "[*] Removing tmpfiles.d snippet (RAPL perms reset on next boot)..."
+rm -f /etc/tmpfiles.d/99-lianli-lcd-rapl.conf
+
 echo "[*] Uninstalling lianli-lcd-driver..."
 rm -f /usr/local/bin/lcd-driver
 rm -rf /opt/lianli-lcd

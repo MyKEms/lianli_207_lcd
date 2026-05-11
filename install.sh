@@ -77,6 +77,22 @@ EOF
 udevadm control --reload-rules
 udevadm trigger
 
+echo "[*] Installing tmpfiles.d snippet for RAPL readability..."
+# /sys/class/powercap/intel-rapl:0/energy_uj is root-only (0400) since
+# kernel ~5.10 as part of the CVE-2020-8694 Platypus side-channel
+# mitigation. Reading it at 1 Hz from a single-user box is far below the
+# attack threshold (Platypus needed >100 Hz of fine-grained sampling
+# across multiple workloads). Relax to 0444 so the hardened lcd-driver
+# (running as non-root) can compute CPU package power for the System
+# Power readout. AMD path is also covered if present.
+cat > /etc/tmpfiles.d/99-lianli-lcd-rapl.conf << 'EOF'
+# Set by lianli-lcd installer — relax CVE-2020-8694 mitigation for compute-power monitoring
+z /sys/class/powercap/intel-rapl:0/energy_uj 0444 - - -
+z /sys/class/powercap/amd-energy:0/energy_uj 0444 - - -
+EOF
+# Apply right now (paths missing on systems without that hw type are silently skipped)
+systemd-tmpfiles --create /etc/tmpfiles.d/99-lianli-lcd-rapl.conf 2>/dev/null || true
+
 echo "[*] Enabling and starting service..."
 systemctl daemon-reload
 systemctl enable --now lcd-driver
