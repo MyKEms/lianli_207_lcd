@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Python deps in pyproject.toml + uv.lock
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Prague"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # Batch all patch + minor updates into one PR per week (less noise).
+      # Major updates still open separately for explicit review.
+      python-non-major:
+        update-types:
+          - "patch"
+          - "minor"
+    labels:
+      - "dependencies"
+
+  # GitHub Actions (none yet, but future-proof — no-op until workflows added)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "ci"
