@@ -10,6 +10,7 @@ A Linux driver for the Lian Li Lancool 207 Digital LCD screen. Displays CPU, GPU
 - 3-minute rolling history graphs (CPU% / CPU°C / RAM% on the left, GPU% / GPU°C / VRAM% on the right)
 - Custom background image (JPEG, rotated and resized to 720×1472)
 - Title and GPU label overridable via `LCD_TITLE` and `LCD_GPU_LABEL` env vars (defaults: hostname and `nvidia-smi` detected GPU name)
+- System power readout in the title strip = CPU package (RAPL) + GPU (`nvidia-smi power.draw`); add a fixed `LCD_BASELINE_WATTS=40` to the unit's `Environment=` if you want to fold in the unmeasurable rest (motherboard + RAM + fans + SSDs + PSU loss)
 
 ## Requirements
 
