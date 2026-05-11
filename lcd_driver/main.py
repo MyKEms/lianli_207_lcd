@@ -61,6 +61,42 @@ def _detect_gpu_name() -> str:
 GPU_NAME = os.environ.get("LCD_GPU_LABEL", _detect_gpu_name())
 
 
+def _detect_cpu_warn_temp():
+    """Pull throttle-warning temperature from kernel coretemp/k10temp sensors."""
+    try:
+        temps = psutil.sensors_temperatures()
+        for key in ("coretemp", "k10temp", "cpu_thermal"):
+            if key in temps and temps[key]:
+                entry = temps[key][0]
+                # entry.high = throttle warning (typically tjmax - 20°C)
+                # entry.critical = tjmax (absolute limit)
+                return entry.high or (entry.critical - 20 if entry.critical else None)
+    except Exception:
+        pass
+    return None
+
+
+def _detect_gpu_max_temp():
+    """Pull GPU Max Operating Temp from nvidia-smi -q."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "-q", "-d", "TEMPERATURE"],
+            timeout=2,
+        ).decode()
+        for line in out.splitlines():
+            if "GPU Max Operating Temp" in line:
+                val = line.split(":")[-1].strip().rstrip("C").strip()
+                if val and val != "N/A":
+                    return float(val)
+    except Exception:
+        pass
+    return None
+
+
+CPU_WARN_TEMP = _detect_cpu_warn_temp()  # e.g. 80°C on Intel Core, None if undetected
+GPU_MAX_TEMP  = _detect_gpu_max_temp()   # e.g. 89°C on 2060 SUPER, None if undetected
+
+
 # ─────────────────────────────────────────────
 #  ROLLING HISTORY
 # ─────────────────────────────────────────────
@@ -271,7 +307,7 @@ def create_stats_png() -> bytes:
                   text, font=font_small, fill=(255, 255, 255, 240))
         return y + BAR_H + 14
 
-    def draw_graph(x, y, w, h, series, y_min, y_max, title):
+    def draw_graph(x, y, w, h, series, y_min, y_max, title, threshold=None):
         AXIS_W  = 36
         PAD_TOP = 22
         PAD_BOT = 4
@@ -291,6 +327,21 @@ def create_stats_png() -> bytes:
             label = f"{int(val)}"
             lw    = draw.textbbox((0, 0), label, font=font_tiny)[2]
             draw.text((gx - lw - 4, py - 9), label, font=font_tiny, fill=(120, 120, 120, 200))
+
+        # Hardware thermal-limit indicator — dashed red line at HW-reported
+        # throttle/max-operating temp. Skipped if undetected or out of range.
+        if threshold is not None and y_min <= threshold <= y_max:
+            ty = gy + gh - int((threshold - y_min) / y_range * gh)
+            dash, gap = 8, 6
+            cur = gx
+            while cur < gx + gw:
+                end = min(cur + dash, gx + gw)
+                draw.line([(cur, ty), (end, ty)], fill=(255, 70, 70, 180), width=1)
+                cur = end + gap
+            tlabel = f"⚠ {int(threshold)}°"
+            tlw = draw.textbbox((0, 0), tlabel, font=font_tiny)[2]
+            draw.text((gx + gw - tlw - 4, ty - 17), tlabel,
+                      font=font_tiny, fill=(255, 90, 90, 220))
 
         for data, color, _ in series:
             pts    = list(data)
@@ -388,7 +439,8 @@ def create_stats_png() -> bytes:
             (history["ram_pct"],  (160, 80, 255), "RAM %"),
         ],
         y_min=0, y_max=100,
-        title="CPU  —  3 min history"
+        title="CPU  —  3 min history",
+        threshold=CPU_WARN_TEMP,
     )
     draw_graph(
         x=col2_x, y=GRAPH_Y, w=col2_w, h=GRAPH_H,
@@ -398,7 +450,8 @@ def create_stats_png() -> bytes:
             (history["gpu_mem"],  (160, 80, 255),  "VRAM %"),
         ],
         y_min=0, y_max=100,
-        title="GPU  —  3 min history"
+        title="GPU  —  3 min history",
+        threshold=GPU_MAX_TEMP,
     )
 
     # ── Bottom strip: RAM | GPU Memory ─────────────────────────────────────
